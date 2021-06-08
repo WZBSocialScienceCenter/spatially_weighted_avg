@@ -1,0 +1,247 @@
+---
+title: "Spatially weighted averages with Voronoi regions"
+author: "Markus Konrad"
+date: "6/8/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(sf)
+  library(dplyr)
+  library(ggplot2)  
+})
+```
+
+# Data
+
+## Statistical regions
+
+```{r}
+bln_plan <- read_sf('data/berlin_plr.shp') %>%
+  mutate(areaid = as.integer(SCHLUESSEL)) %>%   # transform character SCHLUESSEL to numeric area ID
+  select(areaid, name = PLR_NAME)
+bln_plan
+```
+
+## Public and private primary schools
+
+```{r}
+schools <- read.csv('data/grundschulen_berlin_2019.csv', stringsAsFactors = FALSE) %>%
+  st_as_sf(coords = c('lng', 'lat'), crs = 4326)
+schools
+```
+
+```{r}
+schools <- mutate(schools, schoolid = 1:nrow(schools), .before = 1) %>%
+  st_transform(crs = st_crs(bln_plan))
+schools
+```
+
+```{r}
+{
+  plot(bln_plan$geometry)
+  plot(schools$geometry, col = 'red', add = TRUE)
+}
+```
+
+## Socioeconomic data for statistical regions
+
+Cite Helbig Salomo
+
+```{r}
+(bln_welfare <- read.csv('data/berlin_welfare.csv', stringsAsFactors = FALSE))
+```
+
+```{r}
+(bln <- inner_join(bln_plan, bln_welfare, by = 'areaid') %>%
+  select(-name))
+```
+
+```{r}
+plot(bln['welfare_chld'])
+```
+
+## Public / private primary schools and poverty by statistical region
+
+```{r}
+ggplot() +
+  geom_sf(aes(fill = welfare_chld), color = 'black', data = bln) +
+  geom_sf(aes(color = traeger), size = 2, alpha = 0.75, data = schools) +
+  scale_fill_binned(type = 'viridis', guide = guide_bins(title = '% Welfare')) +
+  scale_color_manual(values = c('oeff' = '#8C2F92',  'priv' = '#928C2F'),
+                     labels = c('public school', 'private school'),
+                     guide = guide_legend(title = '')) +
+  coord_sf(datum = NA) +
+  labs(title = "Public / private primary schools and poverty",
+       subtitle = "Choropleth map of percentage of children whose parents obtain social welfare.\nDots represent primary schools.") +
+  theme_minimal()
+```
+
+```{r}
+(schools_plan <- st_join(schools, bln))
+```
+
+```{r}
+ggplot(schools_plan) +
+  geom_violin(aes(x = traeger, y = welfare_chld), draw_quantiles = c(0.5)) +
+  geom_jitter(aes(x = traeger, y = welfare_chld), alpha = 0.25)
+```
+
+```{r}
+st_drop_geometry(schools_plan) %>%
+  group_by(by = traeger) %>%
+  summarise(mean_welfare_chld = mean(welfare_chld),
+            median_welfare_chld = median(welfare_chld))
+
+```
+
+# Using Voronoi regions for a spatially weighted average
+
+assumptions
+
+```{r}
+bln_outline <- st_union(bln$geometry)
+
+(voronois <- st_multipoint(st_coordinates(schools$geometry)) %>%
+  st_voronoi(bln_outline) %>%
+  st_collection_extract() %>%
+  st_sfc(crs = st_crs(bln)))
+```
+
+```{r}
+{
+  plot(bln_outline)
+  plot(schools$geometry, col = 'blue', pch = 19, add = TRUE)
+  plot(voronois, border = 'red', col = NA, add = TRUE)
+}
+```
+
+```{r}
+bln_vor <- st_intersection(voronois, bln_outline)
+
+{
+  plot(bln_vor)
+  plot(schools$geometry, col = 'red', add = TRUE)
+}
+
+```
+
+```{r}
+{
+  plot(bln$geometry)
+  plot(bln_vor, col = '#80000055', border = 'white', add = TRUE)
+}
+```
+
+```{r}
+(exampleschool <- schools[schools$schoolid == 270,])
+```
+
+```{r}
+{
+  plot(bln$geometry)
+  plot(bln_vor, col = '#80000055', border = 'white', add = TRUE)
+  plot(exampleschool$geometry, col = 'red', pch = 19, add = TRUE)
+}
+```
+
+```{r}
+(examplevor <- st_join(st_as_sf(bln_vor), exampleschool, left = FALSE))
+```
+
+```{r}
+plot(examplevor$geometry)
+```
+
+```{r}
+(exampleareas <- st_intersection(bln[examplevor,], examplevor))
+```
+
+```{r}
+plot(exampleareas$geometry)
+```
+
+
+```{r}
+ggplot() +
+  geom_sf(color = 'black', data = bln) +
+  geom_sf(fill = NA, color = 'red', linetype = 'dotted', data = bln_vor) +
+  geom_sf(aes(fill = welfare_chld), color = 'black', data = exampleareas) +
+  geom_sf(fill = NA, color = 'red', data = examplevor) +
+  geom_sf(color = 'red', size = 3, data = exampleschool) +
+  scale_fill_binned(type = 'viridis', guide = guide_bins(title = '% Welfare')) +
+  coord_sf(datum = NA) +
+  labs(title = "Berlin statistical regions and Voronoi regions of schools",
+       subtitle = "Highlighted school #270 with surrounding Voronoi region and planning areas intersection.") +
+  theme_minimal()
+```
+
+```{r}
+weighted.mean(exampleareas$welfare_chld, as.numeric(st_area(exampleareas)))
+```
+```{r}
+schools_plan[schools_plan$schoolid == 270, ]$welfare_chld
+```
+
+```{r}
+(school_vor <- st_join(st_as_sf(bln_vor), schools))
+```
+
+try out approach for first three schools:
+
+```{r, warning=FALSE}
+{
+  set.seed(20210608)
+  plot(bln_outline)
+
+  for (i in sample(1:nrow(school_vor), 10)) {
+    vor <- school_vor$geometry[i]
+    areas <- st_intersection(bln[vor,], vor)
+    plot(areas, col = NA, border = 'black', add = TRUE)
+    plot(vor, col = NA, border = 'red', add = TRUE)
+    plot(schools[schools$schoolid == school_vor[i, ]$schoolid,]$geometry, col = 'blue', pch = 19, cex = 0.5, add = TRUE)
+  }
+}
+```
+
+now to the real computation...
+takes some time!
+
+```{r, warning=FALSE}
+school_vor$welfare_chld <- sapply(school_vor$geometry, function(vor) {
+  vor <- st_sfc(vor, crs = st_crs(bln))     # the Voronoi polygon "vor" loses the CRS during sapply -> set it here again
+  areas <- st_intersection(bln[vor,], vor)
+  weighted.mean(areas$welfare_chld, as.numeric(st_area(areas)))
+})
+
+school_vor
+```
+
+```{r}
+plot(school_vor['welfare_chld'])
+```
+
+
+```{r}
+ggplot(school_vor) +
+  geom_violin(aes(x = traeger, y = welfare_chld), draw_quantiles = c(0.5)) +
+  geom_jitter(aes(x = traeger, y = welfare_chld), alpha = 0.25)
+```
+
+```{r}
+st_drop_geometry(school_vor) %>%
+  group_by(by = traeger) %>%
+  summarise(median_welfare_chld = median(welfare_chld),
+            mean_welfare_chld = mean(welfare_chld))
+```
+
+
+
+- limitations
+- travel time isochrones
+
