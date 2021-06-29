@@ -1,26 +1,32 @@
 ---
-title: "Spatially weighted averages with Voronoi regions by example: Socioeconomic characteristics around public and private schools in Berlin"
+title: "Spatially weighted averages with Voronoi regions"
 author: "Markus Konrad"
 date: "6/8/2021"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  dev = 'png',
+  fig.path='figures/'
+)
 ```
 
 
 # Introduction
 
-It's a common use case when working with geo-spatial data to augment one spatial dataset with information from another spatial dataset – this can be done via [spatial joins](). In this post for example, I will show how to augment a dataset containing school locations with socioeconomic data of their surrounding statistical region. This approach has the drawback that the surrounding statistical region doesn't reflect the actual catchment area of the school. I will present an approach based on intersection with Voronoi regions which should more accurately represent the socioeconomic characteristics of the population around a school.
+Spatial joins allow to augment one spatial dataset with information from another spatial dataset by linking overlapping features. In this post I will provide an example to show how to augment a dataset containing school locations with socioeconomic data of their surrounding statistical region using R and the package [*sf*](https://cran.r-project.org/web/packages/sf/index.html). This approach has the drawback that the surrounding statistical region doesn't reflect the actual catchment area of the school. I will present an alternative approach where catchment areas are approximated as Voronoi regions. Overlaps between these Voronoi regions and the statistical regions allow to calculate the weighted average of the socioeconomic statistics.
 
 # Data
 
-For this example, I'd like to compare child poverty (more accurately the percentage of children whose parents obtain social welfare) in the neighborhood regions around public and private primary schools in Berlin. This blog post concentrates on how to join the point samples (the schools) with the surrounding statistical regions, so I will present only a few summary statistics in the end since proper spatial modeling is beyond the scope of this blog post.
+For this example, I'd like to compare the percentage of children whose parents obtain social welfare in the neighborhood regions around public and private primary schools in Berlin. This blog post concentrates on how to join the point samples (the schools) with the surrounding statistical regions, so I will present only a few summary statistics in the end since proper spatial modeling is beyond the scope of this blog post.
 
-We will work with three datasets: The first spatial dataset contains the shape of the statistical regions in Berlin, the second dataset contains the socioeconomic data for these regions and the third dataset contains the locations and other attributes of  primary schools in Berlin.
+We will work with three datasets: The first spatial dataset contains the shape of the statistical regions in Berlin, the second dataset contains the socioeconomic data for these regions and the third dataset contains the locations and other attributes of primary schools in Berlin.
 
-All data and the code are available in the [GitHub repository](https://github.com/WZBSocialScienceCenter/spatially_weighted_avg). We will use the [*sf* package](https://cran.r-project.org/web/packages/sf/index.html) for working with spatial data in R, [*dplyr*](https://dplyr.tidyverse.org/) for data management and [*ggplot2*](https://ggplot2.tidyverse.org/) for a few more advanced visualizations, i.e. when base `plot()` is not sufficient:
+All data and the code are available in the [GitHub repository](https://github.com/WZBSocialScienceCenter/spatially_weighted_avg). We will use the [*sf* package](https://cran.r-project.org/web/packages/sf/index.html) for working with spatial data in R, [*dplyr*](https://dplyr.tidyverse.org/) for data management and [*ggplot2*](https://ggplot2.tidyverse.org/) for a few more advanced visualizations, i.e. when base `plot()` is not sufficient.
 
 ```{r, warning=FALSE, message=FALSE}
 library(sf)
@@ -30,87 +36,77 @@ library(ggplot2)
 
 ## Socioeconomic data for statistical regions
 
-We will at first load a dataset with the most granular statistical regions for Berlin, called [*Planungsräume* (planning areas)](https://www.stadtentwicklung.berlin.de/planen/basisdaten_stadtentwicklung/lor/). We select the area ID and name as spatial attributes. The result is a spatial dataframe (a *simple feature* (sf) collection).
+We will at first load a dataset with the most granular official statistical regions for Berlin, called [*Planungsräume* (planning areas)](https://www.stadtentwicklung.berlin.de/planen/basisdaten_stadtentwicklung/lor/). We select the area ID and name as spatial attributes. The result is a spatial dataframe (a *simple feature (sf)* collection).
 
 ```{r}
 bln_plan <- read_sf('data/berlin_plr.shp') %>%
   mutate(areaid = as.integer(SCHLUESSEL)) %>%   # transform character SCHLUESSEL to numeric area ID
   select(areaid, name = PLR_NAME)
-bln_plan
+head(bln_plan)
 ```
 
-When printing this dataframe, the header reveals another important information: The coordinate reference system (CRS) of this dataset is *ETRS89 / UTM zone 33N*. We will later need to make sure that the coordinates of the school locations and the coordinates of the planning areas use the same coordinate system.
+When printing this dataframe, the header reveals another important information: The coordinate reference system (CRS) of this dataset is [ETRS89 / UTM zone 33N](http://epsg.io/25833). We will later need to make sure that the coordinates of the school locations and the coordinates of the planning areas use the same coordinate system.
 
-This data can be joined with socioeconomic information provided from official sources. Luckily, [Helbig/Salomo 2021](https://shiny2.wzb.eu/konrad/salomo_helbig_dashboard/) compiled these information for many cities in Germany (available for [download](https://shiny2.wzb.eu/konrad/salomo_helbig_dashboard/download/Helbig,%20Salomo%20-%20Sozialraeumliche%20Ungleichheiten%20-%20Daten%20Stand%202021-01-26.xlsx)) among which is data for Berlin from 2020. I've created an excerpt with percentages of residents receiving social welfare (`welfare`) and percentage of children under 15 years whose parents receive social welfare (`welfare_chld`):
+This data can be joined with socioeconomic information provided from official sources. Luckily, [Helbig/Salomo 2021](https://shiny2.wzb.eu/konrad/salomo_helbig_dashboard/) compiled these information for some cities in Germany (available for [download](https://shiny2.wzb.eu/konrad/salomo_helbig_dashboard/download/Helbig,%20Salomo%20-%20Sozialraeumliche%20Ungleichheiten%20-%20Daten%20Stand%202021-01-26.xlsx)) among which is data for Berlin from 2020. I've created an excerpt with percentages of residents receiving social welfare (`welfare`) and percentage of children under 15 years whose parents receive social welfare (`welfare_chld`):
 
 ```{r}
-(bln_welfare <- read.csv('data/berlin_welfare.csv', stringsAsFactors = FALSE))
+bln_welfare <- read.csv('data/berlin_welfare.csv', stringsAsFactors = FALSE)
+head(bln_welfare)
 ```
 
-We can use the area ID for augmenting the planning areas with the welfare statistics. We're joining a spatial with an ordinary dataframe, so we can use dplyr's `inner_join`. Before that we can check that for each planning region we have welfare statistics information and vice versa:
+We can use the area ID for augmenting the planning areas with the welfare statistics. We're joining a spatial with an ordinary dataframe, so we can use dplyr's `inner_join`. Before that we can check that for each planning region we have welfare statistics information and vice versa: ^[Note that when joining spatial and ordinary dataframes, the order of arguments in the join function matters. If you have a spatial dataframe on the "left side" (`x` argument), the result will be a spatial dataframe. If you have an ordinary dataframe on the left side, the result will be an ordinary dataframe, i.e. the merged dataset loses its "spatial nature" and spatial operations won't work with it any more (unless you convert it back to a spatial dataframe again with [`st_as_sf`](https://r-spatial.github.io/sf/reference/st_as_sf.html)).]
 
 ```{r}
 setequal(bln_plan$areaid, bln_welfare$areaid)
 ```
 
 ```{r}
-(bln <- inner_join(bln_plan, bln_welfare, by = 'areaid') %>%
-  select(-name))
+bln <- inner_join(bln_plan, bln_welfare, by = 'areaid') %>%
+  select(-name)
+head(bln)
 ```
 
-Note that when joining spatial and ordinary dataframes, the order of arguments in the join function matters. If you have a spatial dataframe on the "left side" (`x` argument), the result will be a spatial dataframe. If you have an ordinary dataframe on the left side, the result will be an ordinary dataframe, i.e. the merged dataset loses its "spatial nature" and spatial operations won't work with it any more (unless you convert it back to a spatial dataframe again with [`st_as_sf`](https://r-spatial.github.io/sf/reference/st_as_sf.html)).
+A quick plot confirms that it is similar to the one from the [dashboard of the Helbig/Salomo study](https://shiny2.wzb.eu/konrad/salomo_helbig_dashboard/?_state_id_=49379e5c63e0e14c).^[I prefer using the base `plot` function for quick exploration of spatial data and usually only turn to ggplot2 for more advanced or "publication ready" plots. The help page for `plot.sf` provides some information about the arguments of this plotting function used for sf objects.]
 
-```{r}
-inner_join(bln_plan, bln_welfare, by = 'areaid') %>% class()
-```
-
-```{r}
-inner_join(bln_welfare, bln_plan, by = 'areaid') %>% class()
-```
-
-A quick plot confirms that it is similar to the one from the [dashboard of the Helbig/Salomo study](https://shiny2.wzb.eu/konrad/salomo_helbig_dashboard/?_state_id_=49379e5c63e0e14c). I prefer using the base `plot` function for quick exploration of spatial data and usually only turn to ggplot2 for more advanced or "publication ready" plots. The help page for `plot.sf` provides some information about the arguments of this plotting function used for sf objects.
-
-```{r}
+```{r 01cmap}
 plot(bln['welfare_chld'])
 ```
 
-```{r}
+The median percentage of children whose parents receive social welfare is ~20% with an interquartile range of about 29%. The following shows the distribution of this welfare rate:
+
+```{r 02welfarehist}
 hist(bln$welfare_chld,
      main = 'Histogram of percentage of children under 15 years\nwhose parents receive social welfare',
      xlab = '')
 ```
 
-```{r}
-median(bln$welfare_chld)
-```
-```{r}
-IQR(bln$welfare_chld)
-```
-
 ## Public and private primary schools
 
-[Marcel Helbig](https://wzb.eu/de/personen/marcel-helbig), [Rita Nikolai](https://www.erziehungswissenschaften.hu-berlin.de/de/institut/abteilungen/didaktik/As%20Kol/nikolai) and me collected data on school locations in East Germany from 1992 to 2015 in order to analyze the [development of the network of schools in East Germany and which role private schools play in it](https://bibliothek.wzb.eu/wzbrief-bildung/WZBriefBildung382018_helbig_konrad_nikolai.pdf). We created an [interactive map](https://schulenkarte.wzb.eu/) and [published the data](https://schulenkarte.wzb.eu/#daten) and are planning an update with newer data (until 2020), from which will we use an excerpt. This dataset provides school locations from 2019 as [longitude/latitude WGS84 coordinates](https://gisgeography.com/wgs84-world-geodetic-system/) which we can load and convert into a spatial dataset using `st_as_sf`.
+[Marcel Helbig](https://wzb.eu/de/personen/marcel-helbig), [Rita Nikolai](https://www.erziehungswissenschaften.hu-berlin.de/de/institut/abteilungen/didaktik/As%20Kol/nikolai) and me collected data on school locations in East Germany from 1992 to 2015 in order to analyze the [development of the network of schools in East Germany and which role private schools play in it](https://bibliothek.wzb.eu/wzbrief-bildung/WZBriefBildung382018_helbig_konrad_nikolai.pdf). Besides creating an [interactive map](https://schulenkarte.wzb.eu/), we also [published the data](https://schulenkarte.wzb.eu/#daten) and are planning an update with newer data (until 2020) from which will we now use an excerpt. This dataset provides school locations from 2019 as [longitude/latitude WGS84 coordinates](https://gisgeography.com/wgs84-world-geodetic-system/) which we can load and convert into a spatial dataset using `st_as_sf`.
 
 
 ```{r}
-(schools <- read.csv('data/grundschulen_berlin_2019.csv', stringsAsFactors = FALSE) %>%
-  st_as_sf(coords = c('lng', 'lat'), crs = 4326))  # EPSG 4326 is WGS84 lat/long coord.
+schools <- read.csv('data/grundschulen_berlin_2019.csv', stringsAsFactors = FALSE) %>%
+  st_as_sf(coords = c('lng', 'lat'), crs = 4326)  # EPSG 4326 is WGS84 lat/long coord.
+head(schools)
 ```
 
-The variable `traeger` encodes whether a given facility is public ("oeff") or private ("priv") primary school. The only other important feature will be the school's location, represented as point geometries that use the WGS84 CRS. The Berlin planning area data uses a different CRS, namely ETRS89 / UTM zone 33N. We need to make sure that both datasets use the same CRS, otherwise spatial operations such as spatial joins will fail. WGS84 uses spherical coordinates measured in degrees and calculations with these coordinates are quite complex because they happen on a curved surface. It's better to use a CRS that uses planar coordinates for all the following spatial operations. The ETRS89 CRS used in the Berlin planning area data [uses planar coordinates measured in meters](http://epsg.io/3045), so we should transform the school locations to this CRS using `st_transform`:
+The variable `traeger` encodes whether a given facility is a public ("oeff") or private ("priv") primary school. The only other important feature will be the school's location, represented as point geometries that use the WGS84 CRS. The Berlin planning area data uses a different CRS, namely ETRS89 / UTM zone 33N. We need to make sure that both datasets use the same CRS, otherwise spatial operations such as spatial joins will fail. WGS84 uses spherical coordinates measured in degrees and calculations with these coordinates are quite complex because they happen on a curved surface. It's better to use a CRS that uses planar coordinates for all the following spatial operations. The ETRS89 CRS used in the Berlin planning area data uses planar coordinates measured in meters, so we should transform the school locations to this CRS using `st_transform`:
 
 ```{r}
 schools <- mutate(schools, schoolid = 1:nrow(schools), .before = 1) %>%
   st_transform(crs = st_crs(bln_plan))
-schools
+head(schools)
 ```
+
+In this dataset from 2019, we have 364 public and 71 private primary schools in Berlin.
 
 ## Public / private primary schools and poverty by statistical region
 
 Both datasets use the same coordinate system now, so we can plot the school locations on top of the planning areas. I will use ggplot2 this time to make a choropleth map of the `welfare_chld` variable and overlay that with the public and private primary school locations.
 
 
-```{r}
+```{r 03cmap_schools}
 ggplot() +
   geom_sf(aes(fill = welfare_chld), color = 'black', data = bln) +
   geom_sf(aes(color = traeger), size = 1, alpha = 0.75, data = schools) +
@@ -124,21 +120,22 @@ ggplot() +
   theme_minimal()
 ```
 
-From the figure alone, it's probably hard to assess whether there's a pattern in the distribution of private and public schools regarding areas with higher percentage of social welfare recipients in the city. We can join the schools' data with the socioeconomic information of the planning area they're located in order to compare the social welfare statistics of regions around private schools with those around public schools. This can be done with a [spatial join](https://geocompr.robinlovelace.net/spatial-operations.html#spatial-joining) using [`st_join`](https://r-spatial.github.io/sf/reference/st_join.html). By default, this function joins the spatial features of the first argument with features of the second argument **when they intersect** -- in our case this means a school is linked with the planning area it's located in. Note that the order of arguments matters here and that the spatial geometry of the first argument is retained in the resulting dataset.
+From the figure alone, it's probably hard to assess whether there's a pattern in the distribution of private and public schools regarding areas with higher welfare rate in the city. In order to compare the social welfare statistics of regions around private schools with those around public schools, we can join the schools' data with the socioeconomic information of the planning areas they're located in. This can be done with a [spatial join](https://geocompr.robinlovelace.net/spatial-operations.html#spatial-joining) using [`st_join`](https://r-spatial.github.io/sf/reference/st_join.html). By default, this function joins the spatial features of the first argument with features of the second argument **when they intersect** -- in our case this means a school is linked with the planning area it's located in. Note that the order of arguments matters here and that the spatial geometry of the first argument is retained in the resulting dataset.
 
 ```{r}
-(schools_plan <- st_join(schools, bln))
+schools_plan <- st_join(schools, bln)
+head(schools_plan)
 ```
 
-We can see that the schools' data was linked with the data from the planning areas. We should also check whether there's a school that was not located in any planning area (this may for example happen when point locations are very close to a border):
+We can see that the schools' data was linked with the data from the planning areas. We should also check whether there's a school that was not located in any planning area (this may for example happen when a school is very close to the Berlin-Brandenburg border):
 
 ```{r}
 sum(is.na(schools_plan$areaid))
 ```
 
-All schools were linked with their planning region, so we can now compare the percentage of children whose parents obtain social welfare between public and private schools:
+All schools were linked with their planning region, so we can now compare the percentage of children whose parents obtain social welfare between public and private primary schools:
 
-```{r}
+```{r 04violin1}
 ggplot(schools_plan) +
   geom_violin(aes(x = traeger, y = welfare_chld), draw_quantiles = c(0.5)) +
   geom_jitter(aes(x = traeger, y = welfare_chld), alpha = 0.25) +
@@ -146,7 +143,7 @@ ggplot(schools_plan) +
   labs(title = 'Percentage of children whose parents obtain social welfare', x = '', y = '% welfare')
 ```
 
-Our descriptive results indicate that the median percentage of children whose parents obtain social welfare is around six percent higher in the statistical regions around public schools than around private schools:
+Our descriptive results indicate that the median percentage of children whose parents obtain social welfare is around six percent higher in the statistical regions around public schools than around private schools: ^[I'm using `st_drop_geometry` here, because otherwise a [spatial aggregation](https://geocompr.robinlovelace.net/spatial-operations.html#spatial-aggr) would be performed which is not necessary here.]
 
 ```{r}
 st_drop_geometry(schools_plan) %>%
@@ -155,9 +152,9 @@ st_drop_geometry(schools_plan) %>%
 
 ```
 
-This is an interesting descriptive result and we may continue with our spatial analysis from here. However, our current approach doesn't consider the catchment area of a school correctly: Children from nearby planning areas will most likely visit a school but at the moment we only consider the one planning area in which a school is located. As an example, let's zoom to school #391 "Evangelische Schule Berlin Buch" in the north of Berlin. As you can see, only considering the planning area in which this school is located omits the higher welfare rates in nearby areas:
+This is an interesting descriptive result and we may continue with our spatial analysis from here. However, our current approach doesn't consider the catchment area of a school correctly: Children from nearby planning areas will most likely visit a school, but at the moment we only consider the one planning area in which a school is located. As an example, let's zoom to school #391 "Evangelische Schule Berlin Buch" in the north of Berlin. As you can see, only considering the planning area in which this school is located omits the higher welfare rates in nearby areas:
 
-```{r}
+```{r 05catchment}
 ggplot(bln) +
   geom_sf(aes(fill = welfare_chld), color = 'black') +
   geom_sf(data = filter(schools, schoolid == 391), size  = 3, color = 'red') +
@@ -171,9 +168,9 @@ ggplot(bln) +
 
 We can improve on this by using each schools' catchment area and then taking the weighted average of the welfare variable from the intersections with the planning areas. You may be able to get spatial data on school catchment areas from administrative sources, but this is not often the case. So how could we define such a catchment area? One possibility would be to construct a circle around each school which represents the catchment area for a certain radius. However, it's hard to justify a certain value for that radius and the radius for such a catchment area should probably vary depending on where the school is located (smaller catchment areas in inner city schools than for schools in the outskirts).
 
-Another approach relies on Voronoi regions. They partition the space between given points so that the Voronoi region around each point covers an area of minimal distance to that origin point. In other words: the Voronoi region around a school is the area in which all the households are located that are closest to that school. It's a reasonable assumption that catchment areas for schools can be approximated by Voronoi regions in Berlin since children are [by law assigned to schools near their place of residence](https://www.berlin.de/sen/bildung/schule/bildungswege/grundschule/anmeldung/). Parents can try to register their children at another school, but priority is given to children that live closer to that school.
+Another approach relies on Voronoi regions. They partition the space between given points so that the Voronoi region around each point covers an area of minimal distance to that origin point. In other words: the Voronoi region around a school is the area in which all households are located that are closest to that school. It's a reasonable assumption that catchment areas for schools can be approximated by Voronoi regions in Berlin since children are [by law assigned to schools near their place of residence](https://www.berlin.de/sen/bildung/schule/bildungswege/grundschule/anmeldung/). Parents can try to register their children at another school, but priority is given to children that live closer to that school. A problem is that this "automatical" assignment happens for public schools only and that the catchment areas of private schools are probably larger, but for the sake of simplicity in this example we'll stick to the Voronoi regions.
 
-Voronoi regions can be generated with [`st_voronoi`](https://r-spatial.github.io/sf/reference/geos_unary.html), which accepts the points as `MULTIPOINT` geometry object. The second argument is an envelope polygon for which we'll use the the Berlin borders. The resulting object is a `GEOMETRYCOLLECTION` geometry object which we pass on to [`st_collection_extract`](https://r-spatial.github.io/sf/reference/st_collection_extract.html) and [`st_sfc`](https://r-spatial.github.io/sf/reference/sfc.html) in order to transform this to *geometry set* object that has the same CRS as our other spatial data (ETRS89).
+Voronoi regions can be generated with [`st_voronoi`](https://r-spatial.github.io/sf/reference/geos_unary.html), which accepts the points as `MULTIPOINT` geometry object. The second argument is an envelope polygon for which we'll use the the Berlin borders. The resulting object is a `GEOMETRYCOLLECTION` geometry object which we pass on to [`st_collection_extract`](https://r-spatial.github.io/sf/reference/st_collection_extract.html) and [`st_sfc`](https://r-spatial.github.io/sf/reference/sfc.html) in order to transform this to a *geometry set* object that has the same CRS as our other spatial data (ETRS89).
 
 ```{r}
 bln_outline <- st_union(bln$geometry)  # Berlin borders
@@ -186,7 +183,7 @@ bln_outline <- st_union(bln$geometry)  # Berlin borders
 
 We can now plot the generated regions along with the school locations:
 
-```{r}
+```{r 06voro1}
 {
   plot(bln_outline)
   plot(schools$geometry, col = 'blue', pch = 19, add = TRUE)
@@ -194,21 +191,22 @@ We can now plot the generated regions along with the school locations:
 }
 ```
 
-We can see that the Voronoi regions extend beyond the borders of Berlin so we should take the intersection between the Voronoi regions and the Berlin border in order to "cut" these regions:
+We can see that the Voronoi regions extend beyond the borders of Berlin so we should take the intersection between the Voronoi regions and the Berlin border in order to clip these regions:
 
-```{r}
+```{r 07voro2}
 bln_vor <- st_intersection(voronois, bln_outline)
 
 {
-  plot(bln_vor, border = 'red', col = NA)
+  plot(bln_outline)
   plot(schools$geometry, col = 'blue', pch = 19, add = TRUE)
+  plot(bln_vor, border = 'red', col = NA, add = TRUE)
 }
 
 ```
 
 Let's overlay the planning areas with the schools' Voronoi regions to see how they differ. Blue dots represent the schools.
 
-```{r}
+```{r 08voro3}
 {
   plot(bln$geometry)
   plot(bln_vor, col = '#80000055', border = 'white', add = TRUE)
@@ -216,13 +214,13 @@ Let's overlay the planning areas with the schools' Voronoi regions to see how th
 }
 ```
 
-The goal is now to calculate the weighted average of the welfare rate for a given school by taking into account all planning areas that the school's Voronoi region intersects with. The weights will be determined by the intersection area between the Voronoi region and the planning areas. I will first do this with a single school only to illustrate how it works. This school will be #270 "Müggelheimer Schule" located in the south east:
+The goal is now to calculate the weighted average of the welfare rate for a given school by taking into account all planning areas that the school's Voronoi region intersects with. The weights will be determined by the intersection area between the Voronoi region and the planning areas. I will first do this with a single school only to illustrate how it works. This school will be #270 "Müggelheimer Schule" located in the south east of Berlin:
 
 ```{r}
 (exampleschool <- schools[schools$schoolid == 270,])
 ```
 
-```{r}
+```{r 09voro4}
 {
   plot(bln$geometry)
   plot(bln_vor, col = '#80000055', border = 'white', add = TRUE)
@@ -237,29 +235,29 @@ First, we need the Voronoi region of that school. We can again apply `st_join` f
 ```
 We can see that the extracted Voronoi region seems to be correct:
 
-```{r}
+```{r 10voro_example1}
 {
   plot(examplevor$geometry)
   plot(exampleschool$geometry, col = 'red', pch = 19, add = TRUE)
 }
 ```
 
-The next step is to get the intersections between the planning areas and Voronoi regions, i.e. "to cut" the planning areas according to the school's Voronoi region. We do this with the help of [`st_intersection`](https://r-spatial.github.io/sf/reference/geos_binary_ops.html), which performs the intersection between  spatial objects. The result is a spatial dataframe of the six planning regions that overlap with the school's Voronoi region:
+The next step is to get the intersections between the planning areas and Voronoi regions, i.e. to clip the planning areas according to the school's Voronoi region. We do this with the help of [`st_intersection`](https://r-spatial.github.io/sf/reference/geos_binary_ops.html), which calculates the intersection between spatial objects. The result is a spatial dataframe of the six planning regions that overlap with the school's Voronoi region:
 
 ```{r, warning=FALSE}
 (exampleareas <- st_intersection(bln, examplevor))
 ```
 
-```{r}
+```{r 11voro_example2}
 {
   plot(exampleareas$geometry)
   plot(exampleschool$geometry, col = 'red', pch = 19, add = TRUE)
 }
 ```
 
-We can but that a little bit into perspective again and display this on the Berlin planning regions map overlayed with the schools' Voronoi regions:
+We can put that a little bit into perspective again and display this on the Berlin planning regions map overlayed with the schools' Voronoi regions:
 
-```{r}
+```{r 12voro_example3}
 ggplot() +
   geom_sf(color = 'black', data = bln) +
   geom_sf(fill = NA, color = 'red', linetype = 'dotted', data = bln_vor) +
@@ -276,7 +274,9 @@ ggplot() +
 All that is left now for our example school is to take the weighted average of the welfare rate. The weights are the area of the planning area intersections so that planning areas with larger overlap in the Voronoi region have a higher influence on the overall average. The following shows the planning area intersections along with their area as calculated via [`st_area`](https://r-spatial.github.io/sf/reference/geos_measures.html). We can see that the welfare rate of ~5% in Müggelheim will have the largest weight, followed by the ~17% rate in Kietzer Feld/Nachtheide:
 
 ```{r}
-cbind(exampleareas[c('areaname', 'welfare_chld')], area = st_area(exampleareas))
+cbind(exampleareas[c('areaname', 'welfare_chld')], area = st_area(exampleareas)) %>%
+  mutate(weight = as.numeric(area / sum(area))) %>%
+  arrange(desc(weight))
 ```
 
 We pass these area measurements to `weighted.mean` (stripping the m² unit via `as.numeric` since `weighted.mean` can't handle it) and obtain a weighted average welfare rate of ~8.4% which is quite a bit higher than the ~4.5% we get when using the former approach (linking the school with its planning area "Müggelheim"):
@@ -292,7 +292,8 @@ schools_plan[schools_plan$schoolid == 270, ]$welfare_chld
 We'll next perform these calculations for all schools. First, we find the school inside each Voronoi region using `st_join` as before:
 
 ```{r}
-(school_vor <- st_join(st_as_sf(bln_vor), schools))
+school_vor <- st_join(st_as_sf(bln_vor), schools)
+head(school_vor)
 ```
 
 Next we calculate the planning area intersections, their areas and weighted average of the welfare rate for each school's Voronoi region using `sapply`. This computation takes some seconds to complete and in the end adds the weighted average of the welfare rate as `welfare_chld` variable to the schools' Voronoi region dataset:
@@ -306,16 +307,18 @@ school_vor$welfare_chld <- sapply(school_vor$geometry, function(vor) {
   weighted.mean(areas$welfare_chld, as.numeric(st_area(areas)))
 })
 
-school_vor
+select(school_vor, schoolid, traeger, name, welfare_chld) %>% head()
 ```
 
-```{r}
-plot(school_vor['welfare_chld'], main = 'Weighted average of percentage of children\nwhose parents receive social welfare per school Voronoi region')
+```{r 13cmapvoro}
+plot(school_vor['welfare_chld'],
+     main = 'Weighted average of percentage of children\nwhose parents receive social welfare per school Voronoi region',
+     cex.main = 0.75)
 ```
 
 We again compare public and private schools, this time with our revised calculations:
 
-```{r}
+```{r 14violin2}
 ggplot(school_vor) +
   geom_violin(aes(x = traeger, y = welfare_chld), draw_quantiles = c(0.5)) +
   geom_jitter(aes(x = traeger, y = welfare_chld), alpha = 0.25) +
@@ -331,18 +334,11 @@ st_drop_geometry(school_vor) %>%
   summarise(median_welfare_chld = median(welfare_chld))
 ```
 
-There is not much of a difference for this data, which can be explained by the very small Voronoi regions for the many schools in the inner city that result in a weighted average of the welfare rate that is very close to the rate of the schools' planning area. For other data, where catchment areas are much bigger than the statistical regions (like in the example school in the south east of Berlin), you can expect a larger difference between the two approaches.
+Our updated approach led to a difference that is about one third smaller. This difference is not very large because of the very small Voronoi regions for the many schools in the inner city that result in a weighted average of the welfare rate that is very close to the rate of the schools' planning area. For other data, where catchment areas are bigger than the statistical regions (like in the example school in the south east of Berlin), you can expect a larger difference between the two approaches.
 
-# Limitations and conclusion
+# Conclusion
 
-We have seen how we can calculate a weighted average for some variable of interest for a catchment area around sample points, when this variable of interest was measured for regions that overlap with that catchment area. In the best case scenario, you know the geometry of the catchment areas. Otherwise you may need to approximate them, for example as circular regions around the points or as Voronoi regions. The first option has the drawback of determining a radius for these circles. The second option ...
+The descriptive results suggest that private schools in Berlin may tend to be located in areas with lower rates of children whose parents obtain social welfare as compared to public schools. Further [spatial analysis](https://mgimond.github.io/Spatial/hypothesis-testing.html) could be done to test this hypothesis.
 
-TODO
-
-
-- limitations
-- Voronoi regions appropriate?
-  - priv. schools larger catchment area
-- travel time isochrones (lakes, rivers, etc.)
-- modeling: spatial autocorr.
+We have seen how we can calculate a weighted average for some variable of interest for a catchment area around sample points, when this variable of interest was measured for regions that overlap with that catchment area. In the best case scenario, you know the geometry of the catchment areas. Otherwise you may need to approximate them, for example as circular regions around the points or as Voronoi regions. Additionally, you may consider [nearest-feature-joins or travel time isochrones](https://nhsrcommunity.com/blog/using-sf-to-calculate-catchment-areas/). Which option is more appropriate depends on your use-case.
 
