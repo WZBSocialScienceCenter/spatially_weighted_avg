@@ -1,9 +1,9 @@
 ---
 title: "Spatially weighted averages in R with sf"
 author: "Markus Konrad"
-date: "6/8/2021"
+date: "6/30/2021"
 output:
-  pdf_document: default
+#  pdf_document: default
   html_document: default
 ---
 
@@ -11,7 +11,9 @@ output:
 knitr::opts_chunk$set(
   echo = TRUE,
   dev = 'png',
-  fig.path='figures/'
+  fig.path='figures/',
+  fig.width = 8,
+  fig.height = 6
 )
 ```
 
@@ -166,7 +168,7 @@ st_drop_geometry(schools_plan) %>%
 
 This is an interesting descriptive result and we may continue with our spatial analysis from here. However, our current approach doesn't consider the catchment area of a school correctly: Children from nearby planning areas will most likely visit a school, but at the moment we only consider the one planning area in which a school is located. As an example, let's zoom to school #388 "Evangelische Schule Berlin Buch" in the north of Berlin. As you can see, only considering the planning area in which this school is located omits the higher welfare rates in nearby areas:
 
-```{r 05catchment}
+```{r 05catchment, fig.width=9, fig.height=9}
 ggplot(bln) +
   geom_sf(aes(fill = welfare_chld), color = 'black') +
   geom_sf(data = filter(schools, schoolid == 388), size  = 3, color = 'red') +
@@ -234,6 +236,7 @@ ggplot() +
        subtitle = "Highlighted school #270 with surrounding catchment area and planning areas intersection.") +
   theme_minimal()
 ```
+
 All that is left now for our example school is to take the weighted average of the welfare rate. The weights are the area of the planning area intersections so that planning areas with larger overlap in the catchment area have a higher influence on the overall average. The following shows the planning area intersections along with their area as calculated via [`st_area`](https://r-spatial.github.io/sf/reference/geos_measures.html). We can see that the welfare rate of ~5% in Müggelheim will have the largest weight, followed by the ~17% rate in Kietzer Feld/Nachtheide:
 
 ```{r}
@@ -314,14 +317,24 @@ Our updated approach led to a difference that is only a bit smaller. The differe
 
 # Approximating catchment areas as circular regions or Voronoi regions around schools
 
-Often, spatial data for catchment areas around points of interest are not available, so you may have to try out different approaches to approximate such areas. One possibility would be to construct a circle around each school which represents the catchment area for a certain radius. This can be done via [`st_buffer`](https://r-spatial.github.io/sf/reference/geos_unary.html). However, it's hard to justify a certain value for that radius and the radius for such a catchment area should probably vary depending on where the school is located (smaller catchment areas in inner city schools than for schools in the outskirts).
+So far, we've assumed that private primary schools have the same catchment area as their nearby public schools, since there are no official catchment areas for private primary schools and parents can choose more freely which school they send their children to when they prefer a private school. So if we have no spatial data for about the catchment areas of private primary schools, what can we do?
 
-Another approach relies on Voronoi regions. They partition the space between given points so that the Voronoi region around each point covers an area of minimal distance to that origin point. In other words: the Voronoi region around a school is the area in which all households are located that are closest to that school. Voronoi regions can be generated with [`st_voronoi`](https://r-spatial.github.io/sf/reference/geos_unary.html), which accepts the points as `MULTIPOINT` geometry object. The second argument is an envelope polygon for which we'll use the the Berlin borders. The resulting object is a `GEOMETRYCOLLECTION` geometry object which we pass on to [`st_collection_extract`](https://r-spatial.github.io/sf/reference/st_collection_extract.html) and [`st_sfc`](https://r-spatial.github.io/sf/reference/sfc.html) in order to transform this to a *geometry set* object that has the same CRS as our other spatial data (ETRS89).
+One possibility would be to construct a circle around each private school which represents the catchment area for a certain radius. This can be done via [`st_buffer`](https://r-spatial.github.io/sf/reference/geos_unary.html). However, it's hard to justify a certain value for that radius and the radius for such a catchment area should probably vary depending on where the school is located (smaller catchment areas in inner city schools than for schools in the outskirts).
+
+Another approach relies on Voronoi regions. They partition the space between given points so that the Voronoi region around each point covers an area of minimal distance to that origin point. In other words: the Voronoi region around a school is the area in which all households are located that are closest to that school.  It is reasonable to assume that most parents choose among the closest private schools to their home. This means approximating the catchment area of private primary schools as Voronoi regions may be a good option, while still using the official public primary school catchment areas only for the public schools.
+
+Voronoi regions can be generated with [`st_voronoi`](https://r-spatial.github.io/sf/reference/geos_unary.html), which accepts the points as `MULTIPOINT` geometry object. The second argument is an envelope polygon for which we'll use the the Berlin borders. The resulting object is a `GEOMETRYCOLLECTION` geometry object which we pass on to [`st_collection_extract`](https://r-spatial.github.io/sf/reference/st_collection_extract.html) and [`st_sfc`](https://r-spatial.github.io/sf/reference/sfc.html) in order to transform this to a *geometry set* object that has the same CRS as our other spatial data (ETRS89).
+
+Let's generate the Voronoi regions around all private primary schools:
 
 ```{r}
 bln_outline <- st_union(bln$geometry)  # Berlin borders
 
-(voronois <- st_multipoint(st_coordinates(schools$geometry)) %>%
+privschools <- filter(schools, ownership == 'priv')
+pubschools <- filter(schools, ownership == 'pub')
+
+(priv_voro <-  st_coordinates(privschools$geometry) %>%
+  st_multipoint() %>%
   st_voronoi(bln_outline) %>%
   st_collection_extract() %>%
   st_sfc(crs = st_crs(bln)))
@@ -330,56 +343,33 @@ bln_outline <- st_union(bln$geometry)  # Berlin borders
 We can now plot the generated regions along with the school locations:
 
 ```{r 12voro1}
-{
-  plot(bln_outline)
-  plot(schools$geometry, col = 'blue', pch = 19, add = TRUE)
-  plot(voronois, border = 'red', col = NA, add = TRUE)
-}
+plot(bln_outline)
+plot(privschools$geometry, col = 'blue', pch = 19, add = TRUE)
+plot(priv_voro, border = 'red', col = NA, add = TRUE)
 ```
 
 We can see that the Voronoi regions extend beyond the borders of Berlin so we should take the intersection between the Voronoi regions and the Berlin border in order to clip these regions:
 
 ```{r 13voro2}
-bln_vor <- st_intersection(voronois, bln_outline)
+priv_voro <- st_intersection(priv_voro, bln_outline)
 
-plot(bln_outline)
-plot(schools$geometry, col = 'blue', pch = 19, add = TRUE)
-plot(bln_vor, border = 'red', col = NA, add = TRUE)
-
-```
-
-Let's overlay the planning areas with the schools' Voronoi regions to see how they differ. Blue dots represent the schools.
-
-```{r 13voro3}
-plot(bln$geometry)
-plot(bln_vor, col = '#80000055', border = 'white', add = TRUE)
-plot(schools$geometry, col = 'blue', pch = 19, cex = 0.25, add = TRUE)
-```
-
-Once we have circular regions or Voronoi regions around schools, the rest of the calculations are similar to those with the official catchment areas. We link the schools with their approximated catchment areas and apply the  `spat_weighted_mean` function that we've defined before.
-
-So far, we've assumed that private primary schools have the same catchment area as their nearby public schools, since there are no official catchment areas for private primary schools and parents can choose more freely which school they send their children to when they prefer a private school. However, it is reasonable to assume that most of them choose among the closest private schools to their home. This means approximating the catchment area of private primary schools as Voronoi regions may be a good option, while still using the official public primary school catchment areas only for the public schools.
-
-```{r}
-bln_outline <- st_union(bln$geometry)  # Berlin borders
-
-privschools <- filter(schools, ownership == 'priv')
-pubschools <- filter(schools, ownership == 'pub')
-
-priv_voro <-  st_multipoint(st_coordinates(privschools$geometry)) %>%
-  st_coordinates() %>%
-  st_multipoint() %>%
-  st_voronoi(bln_outline) %>%
-  st_collection_extract() %>%
-  st_sfc(crs = st_crs(bln)) %>%
-  st_intersection(bln_outline)
-```
-
-```{r}
 plot(bln_outline)
 plot(privschools$geometry, col = 'blue', pch = 19, add = TRUE)
 plot(priv_voro, border = 'red', col = NA, add = TRUE)
+
 ```
+
+Let's overlay the planning areas with the private schools' Voronoi regions to see how they differ.
+
+```{r 13voro3}
+plot(bln$geometry)
+plot(priv_voro,  col = '#80000077', border = 'white', add = TRUE)
+plot(privschools$geometry, col = 'blue', pch = 19, cex = 0.5, add = TRUE)
+```
+
+Once we have circular regions or Voronoi regions around the private schools, the rest of the calculations are similar to those with the official catchment areas. We link the private schools with their approximated catchment areas and apply the  `spat_weighted_mean` function that we've defined before. I've done this in the [R notebook for this blog article](#TODO).
+
+Linking the private schools with their Voronoi regions:
 
 ```{r}
 privschools_voro <- st_as_sf(priv_voro) %>%
@@ -389,6 +379,8 @@ privschools_voro <- st_as_sf(priv_voro) %>%
 head(privschools_voro)
 ```
 
+Checking that there's really only one private school per Voronoi region:
+
 ```{r}
 st_drop_geometry(privschools_voro) %>%
   count(voroid) %>%
@@ -397,28 +389,34 @@ st_drop_geometry(privschools_voro) %>%
   stopifnot()
 ```
 
+Generating the weighted averages and plotting the corresponding choropleth map for the private schools:
 
-```{r, warning=FALSE}
+```{r 14voro_choro, warning=FALSE}
 privschools_voro$welfare_chld <- sapply(privschools_voro$geometry, spat_weighted_mean)
 plot(privschools_voro['welfare_chld'],
      main = 'Weighted average of percentage of children\nwhose parents receive social welfare per private school catchment area approx. as Voronoi regions',
      cex.main = 0.75)
 ```
 
+Linking the public schools with their catchment areas:
 
 ```{r}
 pubschools_catch <- st_join(schoolareas, pubschools, left = FALSE)
 head(pubschools_catch)
 ```
 
-```{r, warning=FALSE}
+Generating the weighted averages and plotting the corresponding choropleth map for the public schools:
+
+```{r 15catchment_pub, warning=FALSE}
 pubschools_catch$welfare_chld <- sapply(pubschools_catch$geometry, spat_weighted_mean)
 plot(distinct(pubschools_catch['welfare_chld']),
      main = 'Weighted average of percentage of children\nwhose parents receive social welfare per public school catchment area',
      cex.main = 0.75)
 ```
 
-```{r}
+Combining the results from the public and private schools:
+
+```{r 16violin3}
 pubpriv <- bind_rows(select(pubschools_catch, ownership, welfare_chld),
                      select(privschools_voro, ownership, welfare_chld)) %>%
   st_drop_geometry()
@@ -437,8 +435,6 @@ group_by(pubpriv, ownership) %>%
 # Conclusion
 
 The descriptive results suggest that private schools in Berlin may tend to be located in areas with lower rates of children whose parents obtain social welfare as compared to public schools. Further [spatial analysis](https://mgimond.github.io/Spatial/hypothesis-testing.html) could be done to test this hypothesis.
-
-voronoi regions only for private schools?
 
 We have seen how we can calculate a weighted average for some variable of interest for a catchment area around sample points, when this variable of interest was measured for regions that overlap with that catchment area. In the best case scenario, you know the geometry of the catchment areas. Otherwise you may need to approximate them, for example as circular regions around the points or as Voronoi regions. Additionally, you may consider [nearest-feature-joins or travel time isochrones](https://nhsrcommunity.com/blog/using-sf-to-calculate-catchment-areas/). Which option is more appropriate depends on your use-case.
 
