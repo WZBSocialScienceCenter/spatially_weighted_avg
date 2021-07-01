@@ -20,7 +20,7 @@ knitr::opts_chunk$set(
 
 # Introduction
 
-Spatial joins allow to augment one spatial dataset with information from another spatial dataset by linking overlapping features. In this post I will provide an example showing how to augment a dataset containing school locations with socioeconomic data of their surrounding statistical region using R and the package [*sf*](https://cran.r-project.org/web/packages/sf/index.html). This approach has the drawback that the surrounding statistical region doesn't reflect the actual catchment area of the school. I will present an alternative approach where the overlaps of the schools' catchment areas with the statistical regions allow to calculate the weighted average of the socioeconomic statistics. If we have no data about the actual catchment areas of the schools, we may resort to approximating these areas as circular regions or as Voronoi regions around schools.
+Spatial joins allow to augment one spatial dataset with information from another spatial dataset by linking overlapping features. In this post I will provide an example showing how to augment a dataset containing school locations with socioeconomic data of their surrounding statistical region using R and the package [*sf*](https://cran.r-project.org/web/packages/sf/index.html) (Pebesma 2018). This approach has the drawback that the surrounding statistical region doesn't reflect the actual catchment area of the school. I will present an alternative approach where the overlaps of the schools' catchment areas with the statistical regions allow to calculate the weighted average of the socioeconomic statistics. If we have no data about the actual catchment areas of the schools, we may resort to approximating these areas as circular regions or as Voronoi regions around schools.
 
 # Data
 
@@ -94,7 +94,7 @@ pubschools <- read_sf('data/berlin_pubschools.geojson') %>%
 head(pubschools)
 ```
 
-Now to the private schools' locations. [Marcel Helbig](https://wzb.eu/de/personen/marcel-helbig), [Rita Nikolai](https://www.erziehungswissenschaften.hu-berlin.de/de/institut/abteilungen/didaktik/As%20Kol/nikolai) and me collected data on school locations in East Germany from 1992 to 2015 in order to analyze the [development of the network of schools in East Germany and which role private schools play in it](https://bibliothek.wzb.eu/wzbrief-bildung/WZBriefBildung382018_helbig_konrad_nikolai.pdf). Besides creating an [interactive map](https://schulenkarte.wzb.eu/), we also [published the data](https://schulenkarte.wzb.eu/#daten) and are planning an update with newer data (until 2020) from which will we now use an excerpt. This dataset provides school locations from 2019 as [longitude/latitude WGS84 coordinates](https://gisgeography.com/wgs84-world-geodetic-system/) which we can load and convert into a spatial dataset using `st_as_sf`. We also transform these locations to the ETRS89 CRS used in all prior spatial datasets.
+Now to the private schools' locations. [Marcel Helbig](https://wzb.eu/de/personen/marcel-helbig), [Rita Nikolai](https://www.erziehungswissenschaften.hu-berlin.de/de/institut/abteilungen/didaktik/As%20Kol/nikolai) and me collected data on school locations in East Germany from 1992 to 2015 in order to analyze the [development of the network of schools in East Germany and which role private schools play in it](https://bibliothek.wzb.eu/wzbrief-bildung/WZBriefBildung382018_helbig_konrad_nikolai.pdf) (Helbig/Konrad/Nikolai 2018). Besides creating an [interactive map](https://schulenkarte.wzb.eu/), we also [published the data](https://schulenkarte.wzb.eu/#daten) and are planning an update with newer data (until 2020) from which will we now use an excerpt. This dataset provides school locations from 2019 as [longitude/latitude WGS84 coordinates](https://gisgeography.com/wgs84-world-geodetic-system/) which we can load and convert into a spatial dataset using `st_as_sf`. We also transform these locations to the ETRS89 CRS used in all prior spatial datasets.
 
 ```{r}
 privschools <- read.csv('data/grundschulen_berlin_2019.csv', stringsAsFactors = FALSE) %>%
@@ -438,5 +438,7 @@ We have seen how we can calculate a weighted average for some variable of intere
 
 # References
 
+- *Helbig/Konrad/Nikolai 2018*: [Helbig, M., Konrad, M., & Nikolai, R. (2018). Die Schulinfrastruktur in Ostdeutschland: Ein multimedialer Zugang zur Analyse der Veränderungen von Schulstandorten.](https://www.ssoar.info/ssoar/bitstream/handle/document/66713/ssoar-2018-helbig_et_al-Die_Schulinfrastruktur_in_Ostdeutschland_ein.pdf?sequence=1&isAllowed=y)
 - *Helbig/Salomo 2021:* [Helbig, M., & Salomon, K. (2021). Eine Stadt-getrennte Welten? Sozialräumliche Ungleichheiten für Kinder in sieben deutschen Großstädten (No. 25). Schriften zu Wirtschaft und Soziales.](https://www.econstor.eu/handle/10419/234476)
+- *Pebesma 2018:* [Pebesma, E. J. (2018). Simple features for R: standardized support for spatial vector data. R J., 10(1), 439.](http://pebesma.staff.ifgi.de/RJwrapper.pdf)
 
