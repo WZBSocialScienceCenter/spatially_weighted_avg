@@ -20,11 +20,11 @@ knitr::opts_chunk$set(
 
 # Introduction
 
-Spatial joins allow to augment one spatial dataset with information from another spatial dataset by linking overlapping features. In this post I will provide an example to show how to augment a dataset containing school locations with socioeconomic data of their surrounding statistical region using R and the package [*sf*](https://cran.r-project.org/web/packages/sf/index.html). This approach has the drawback that the surrounding statistical region doesn't reflect the actual catchment area of the school. I will present an alternative approach where the overlaps of the schools' catchment areas with the statistical regions allow to calculate the weighted average of the socioeconomic statistics. If we have no data about the actual catchment areas of the schools, we may resort to approximating these as circular regions or as Voronoi regions around schools.
+Spatial joins allow to augment one spatial dataset with information from another spatial dataset by linking overlapping features. In this post I will provide an example showing how to augment a dataset containing school locations with socioeconomic data of their surrounding statistical region using R and the package [*sf*](https://cran.r-project.org/web/packages/sf/index.html). This approach has the drawback that the surrounding statistical region doesn't reflect the actual catchment area of the school. I will present an alternative approach where the overlaps of the schools' catchment areas with the statistical regions allow to calculate the weighted average of the socioeconomic statistics. If we have no data about the actual catchment areas of the schools, we may resort to approximating these areas as circular regions or as Voronoi regions around schools.
 
 # Data
 
-For this example, I'd like to compare the percentage of children whose parents obtain social welfare in the neighborhood regions around public and private primary schools in Berlin. This blog post concentrates on how to join the point samples (the schools) with the surrounding statistical regions, so I will present only a few summary statistics in the end since proper spatial modeling is beyond the scope of this blog post.
+For this example, I'd like to compare the percentage of children whose parents obtain social welfare in the neighborhood regions around public and private primary schools in Berlin. This blog post concentrates on how to join the point samples (the schools) with the surrounding statistical regions and calculate a spatially weighted average the welfare rate, so I will present only a few descriptive results in the end.
 
 We will work with several datasets: The first spatial dataset contains the shape of the statistical regions in Berlin, the second dataset contains the socioeconomic data for these regions, the third and fourth datasets contain the locations and other attributes of public and private primary schools in Berlin, respectively.
 
@@ -84,7 +84,7 @@ hist(bln$welfare_chld,
 
 ## Public and private primary schools
 
-The [Berlin geodata catalog "FIS Broker"](https://stadtentwicklung.berlin.de/geoinformation/fis-broker/) provides the [locations of public schools in Berlin](https://fbinter.stadt-berlin.de/fb/index.jsp?loginkey=zoomStart&mapId=schulen@senstadt&bbox=362719,5798847,423243,5838687).^[The catalog is a bit clumsy to use, but actually works quite well: You search for the data, get an URL to the [WFS](https://en.wikipedia.org/wiki/Web_Feature_Service) endpoint from the data's metainformation panel and use that URL to obtain the data e.g. via a WFS layer in [QGIS](https://qgis.org/).] I obtained the data and converted it to GeoJSON, which we can now load. We'll only retain primary schools and add an variable denoting that these are public schools. We also see that the CRS of the school locations matches the CRS of the Berlin statistical regions data.
+The [Berlin geodata catalog "FIS Broker"](https://stadtentwicklung.berlin.de/geoinformation/fis-broker/) provides the [locations of public schools in Berlin](https://fbinter.stadt-berlin.de/fb/index.jsp?loginkey=zoomStart&mapId=schulen@senstadt&bbox=362719,5798847,423243,5838687).^[The catalog is a bit clumsy to use, but actually works quite well: You search for the data, get an URL to the [WFS](https://en.wikipedia.org/wiki/Web_Feature_Service) endpoint from the data's metainformation panel and use that URL to obtain the data e.g. via a WFS layer in [QGIS](https://qgis.org/).] I obtained the data and converted it to GeoJSON, which we can now load. We'll only retain primary schools and add a variable denoting that these are public schools. We also see that the CRS of the school locations matches the CRS of the Berlin statistical regions data.
 
 ```{r}
 pubschools <- read_sf('data/berlin_pubschools.geojson') %>%
@@ -163,7 +163,6 @@ Our descriptive results indicate that the median percentage of children whose pa
 st_drop_geometry(schools_plan) %>%
   group_by(ownership) %>%
   summarise(median_welfare_chld = median(welfare_chld))
-
 ```
 
 This is an interesting descriptive result and we may continue with our spatial analysis from here. However, our current approach doesn't consider the catchment area of a school correctly: Children from nearby planning areas will most likely visit a school, but at the moment we only consider the one planning area in which a school is located. As an example, let's zoom to school #388 "Evangelische Schule Berlin Buch" in the north of Berlin. As you can see, only considering the planning area in which this school is located omits the higher welfare rates in nearby areas:
@@ -272,7 +271,7 @@ st_drop_geometry(schools_catch) %>%
   hist(main = 'Number of schools per catchment area', breaks = 1:6 - 0.5, xlab = '')
 ```
 
-Next we calculate the planning area intersections, their areas and weighted average of the welfare rate for each school's catchment area using `sapply`. This computation takes some seconds to complete and in the end adds the weighted average of the welfare rate as `welfare_chld` variable to the schools' catchment area dataset:
+Next we calculate the planning area intersections, their areas and weighted average of the welfare rate for each school's catchment area using `sapply`. We define a function `spat_weighted_mean` for this, which we can later reuse. This computation takes some seconds to complete and in the end adds the weighted average of the welfare rate as `welfare_chld` variable to the schools' catchment area dataset:
 
 
 ```{r, warning=FALSE}
@@ -313,11 +312,11 @@ st_drop_geometry(schools_catch) %>%
   summarise(median_welfare_chld = median(welfare_chld))
 ```
 
-Our updated approach led to a difference that is only a bit smaller. The difference is not so large because of the very small catchment areas for the many schools in the inner city that result in a weighted average of the welfare rate that is very close to the rate of the schools' planning area. For other data, where catchment areas are bigger than the statistical regions (like in the example school in the south east of Berlin), you can expect a larger difference between the two approaches.
+Our updated approach led to a difference that is only a bit smaller. The difference is not so large because of the very small catchment areas for the many schools in the inner city that result in a weighted average of the welfare rate that is very close to the rate of the schools' planning areas. For other data, where catchment areas are bigger than the statistical regions (like in the example school in the south east of Berlin), you can expect a larger difference between the two approaches.
 
 # Approximating catchment areas as circular regions or Voronoi regions around schools
 
-So far, we've assumed that private primary schools have the same catchment area as their nearby public schools, since there are no official catchment areas for private primary schools and parents can choose more freely which school they send their children to when they prefer a private school. So if we have no spatial data for about the catchment areas of private primary schools, what can we do?
+So far, we've assumed that private primary schools have the same catchment area as their nearby public schools, since there are no official catchment areas for private primary schools and parents can choose more freely which school they send their children to when they prefer a private school. So if we have no spatial data about the catchment areas of private primary schools, what can we do?
 
 One possibility would be to construct a circle around each private school which represents the catchment area for a certain radius. This can be done via [`st_buffer`](https://r-spatial.github.io/sf/reference/geos_unary.html). However, it's hard to justify a certain value for that radius and the radius for such a catchment area should probably vary depending on where the school is located (smaller catchment areas in inner city schools than for schools in the outskirts).
 
@@ -356,7 +355,6 @@ priv_voro <- st_intersection(priv_voro, bln_outline)
 plot(bln_outline)
 plot(privschools$geometry, col = 'blue', pch = 19, add = TRUE)
 plot(priv_voro, border = 'red', col = NA, add = TRUE)
-
 ```
 
 Let's overlay the planning areas with the private schools' Voronoi regions to see how they differ.
@@ -437,4 +435,8 @@ group_by(pubpriv, ownership) %>%
 The descriptive results suggest that private schools in Berlin may tend to be located in areas with lower rates of children whose parents obtain social welfare as compared to public schools. Further [spatial analysis](https://mgimond.github.io/Spatial/hypothesis-testing.html) could be done to test this hypothesis.
 
 We have seen how we can calculate a weighted average for some variable of interest for a catchment area around sample points, when this variable of interest was measured for regions that overlap with that catchment area. In the best case scenario, you know the geometry of the catchment areas. Otherwise you may need to approximate them, for example as circular regions around the points or as Voronoi regions. Additionally, you may consider [nearest-feature-joins or travel time isochrones](https://nhsrcommunity.com/blog/using-sf-to-calculate-catchment-areas/). Which option is more appropriate depends on your use-case.
+
+# References
+
+- *Helbig/Salomo 2021:* [Helbig, M., & Salomon, K. (2021). Eine Stadt-getrennte Welten? Sozialräumliche Ungleichheiten für Kinder in sieben deutschen Großstädten (No. 25). Schriften zu Wirtschaft und Soziales.](https://www.econstor.eu/handle/10419/234476)
 
