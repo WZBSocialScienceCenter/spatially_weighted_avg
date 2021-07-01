@@ -365,7 +365,7 @@ plot(priv_voro,  col = '#80000077', border = 'white', add = TRUE)
 plot(privschools$geometry, col = 'blue', pch = 19, cex = 0.5, add = TRUE)
 ```
 
-Once we have circular regions or Voronoi regions around the private schools, the rest of the calculations are similar to those with the official catchment areas. We link the private schools with their approximated catchment areas and apply the  `spat_weighted_mean` function that we've defined before. I've done this in the [R notebook for this blog article](#TODO).
+Once we have circular regions or Voronoi regions around the private schools, the rest of the calculations are similar to those with the official catchment areas. We link the private schools with their approximated catchment areas and apply the  `spat_weighted_mean` function that we've defined before.
 
 Linking the private schools with their Voronoi regions:
 
